@@ -64,6 +64,9 @@ async function getProcessAgents(): Promise<AgentStatus[]> {
         // Get Claude session info for enrichment
         const claudeSessions = await claudeTracker.getActiveSessionsWithValidation();
 
+        // Track which Claude session has been assigned to avoid duplicates
+        let claudeSessionAssigned = false;
+
         for (const proc of processes.list) {
             const procName = proc.name.toLowerCase();
             const command = proc.command.toLowerCase();
@@ -88,9 +91,8 @@ async function getProcessAgents(): Promise<AgentStatus[]> {
                 };
 
                 // Enrich Claude CLI agents with session information
-                if (rule.id === 'claude' && claudeSessions.length > 0) {
-                    // Try to match Claude process with a session
-                    // Use the most recent session as we can't directly match process to session
+                // Only assign session info to the FIRST Claude process to avoid duplicates
+                if (rule.id === 'claude' && claudeSessions.length > 0 && !claudeSessionAssigned) {
                     const mostRecentSession = claudeSessions[0];
                     agent.currentTask = mostRecentSession.currentTask;
                     agent.sessionId = mostRecentSession.sessionId;
@@ -104,6 +106,8 @@ async function getProcessAgents(): Promise<AgentStatus[]> {
                         console.error('Error fetching tasks for session:', err);
                         agent.tasks = [];
                     }
+
+                    claudeSessionAssigned = true;
                 }
 
                 agents.push(agent);
