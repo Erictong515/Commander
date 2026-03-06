@@ -40,7 +40,6 @@ interface OllamaSession {
 
 class OllamaTracker {
     private readonly baseUrl = 'http://localhost:11434';
-    private sessions: Map<string, OllamaSession> = new Map();
 
     /**
      * Get all running Ollama models
@@ -65,9 +64,8 @@ class OllamaTracker {
      */
     async getActiveSessionsWithTasks(): Promise<OllamaSession[]> {
         const models = await this.getRunningModels();
-        const sessions: OllamaSession[] = [];
 
-        for (const model of models) {
+        return models.map(model => {
             const sessionId = `ollama-${model.name}-${Date.now()}`;
 
             // Create a synthetic task based on model being loaded
@@ -89,10 +87,8 @@ class OllamaTracker {
                 sizeVram: model.size_vram,
             };
 
-            sessions.push(session);
-        }
-
-        return sessions;
+            return session;
+        });
     }
 
     /**

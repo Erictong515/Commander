@@ -14,8 +14,11 @@ import {
     StopCircle,
     Search,
     Filter,
+    LayoutList,
+    LayoutGrid,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { GroupedAgentView } from './GroupedAgentView';
 
 interface ClaudeTask {
     taskId: string;
@@ -30,7 +33,7 @@ interface LocalAgent {
     id: string;
     name: string;
     type: 'CLI' | 'Local-LLM';
-    status: 'active' | 'processing' | 'idle';
+    status: 'active' | 'processing' | 'idle' | 'error';
     cpu: number;
     memory: number;
     pid?: number;
@@ -48,6 +51,7 @@ export function SwarmPage() {
     const [searchTerm, setSearchTerm] = useState('');
     const [typeFilter, setTypeFilter] = useState<string>('all');
     const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
+    const [viewMode, setViewMode] = useState<'grouped' | 'table'>('grouped'); // 新增：视图模式
 
     useEffect(() => {
         let ws: WebSocket;
@@ -182,6 +186,31 @@ export function SwarmPage() {
                 <div className="flex items-center justify-between mb-4">
                     <h2 className="text-lg font-semibold text-white">Agent 列表</h2>
                     <div className="flex items-center gap-3">
+                        {/* View Mode Toggle */}
+                        <div className="flex items-center gap-1.5 border border-white/10 rounded-lg p-1">
+                            <button
+                                onClick={() => setViewMode('grouped')}
+                                className={`p-1.5 rounded transition-all ${
+                                    viewMode === 'grouped'
+                                        ? 'bg-red-500/10 text-red-400'
+                                        : 'text-white/40 hover:text-white/60'
+                                }`}
+                                title="分组视图"
+                            >
+                                <LayoutList className="w-4 h-4" />
+                            </button>
+                            <button
+                                onClick={() => setViewMode('table')}
+                                className={`p-1.5 rounded transition-all ${
+                                    viewMode === 'table'
+                                        ? 'bg-red-500/10 text-red-400'
+                                        : 'text-white/40 hover:text-white/60'
+                                }`}
+                                title="表格视图"
+                            >
+                                <LayoutGrid className="w-4 h-4" />
+                            </button>
+                        </div>
                         {/* Type Filter */}
                         <div className="flex items-center gap-1.5">
                             <Filter className="w-4 h-4 text-white/30" />
@@ -221,7 +250,15 @@ export function SwarmPage() {
                                 : '正在连接本地守护进程...'}
                         </p>
                     </div>
+                ) : viewMode === 'grouped' ? (
+                    // 分组视图
+                    <GroupedAgentView
+                        agents={filteredAgents}
+                        onAgentClick={setSelectedAgent}
+                        selectedAgent={selectedAgent}
+                    />
                 ) : (
+                    // 表格视图（原有的）
                     <div className="rounded-xl border border-white/5 overflow-hidden">
                         <table className="w-full">
                             <thead>
