@@ -1,0 +1,146 @@
+{
+  "runId": "eval-1772767206561",
+  "timestamp": "2026-03-06T03:20:06.561Z",
+  "totalCases": 10,
+  "passed": 3,
+  "warned": 0,
+  "failed": 7,
+  "overallScore": 30,
+  "suites": {
+    "resource": {
+      "total": 3,
+      "passed": 0,
+      "warned": 0,
+      "failed": 3,
+      "avgScore": 0
+    },
+    "response": {
+      "total": 4,
+      "passed": 1,
+      "warned": 0,
+      "failed": 3,
+      "avgScore": 25
+    },
+    "stability": {
+      "total": 3,
+      "passed": 2,
+      "warned": 0,
+      "failed": 1,
+      "avgScore": 67
+    }
+  },
+  "results": [
+    {
+      "caseId": "EVAL-R01",
+      "caseName": "Agent Memory Footprint",
+      "suite": "resource",
+      "severity": "fail",
+      "score": 0,
+      "message": "Exception: Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON",
+      "timestamp": "2026-03-06T03:20:05.410Z",
+      "durationMs": 4
+    },
+    {
+      "caseId": "EVAL-R02",
+      "caseName": "Total CPU Utilization",
+      "suite": "resource",
+      "severity": "fail",
+      "score": 0,
+      "message": "Exception: Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON",
+      "timestamp": "2026-03-06T03:20:05.413Z",
+      "durationMs": 2
+    },
+    {
+      "caseId": "EVAL-R03",
+      "caseName": "System Memory Headroom",
+      "suite": "resource",
+      "severity": "fail",
+      "score": 0,
+      "message": "Exception: Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON",
+      "timestamp": "2026-03-06T03:20:05.414Z",
+      "durationMs": 1
+    },
+    {
+      "caseId": "EVAL-P01",
+      "caseName": "Health Endpoint Latency",
+      "suite": "response",
+      "severity": "pass",
+      "score": 100,
+      "message": "Responded in 1ms. Status: ok",
+      "metrics": {
+        "latencyMs": 1,
+        "status": "ok"
+      },
+      "timestamp": "2026-03-06T03:20:05.415Z",
+      "durationMs": 1
+    },
+    {
+      "caseId": "EVAL-P02",
+      "caseName": "Agents Data Completeness",
+      "suite": "response",
+      "severity": "fail",
+      "score": 0,
+      "message": "Exception: Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON",
+      "timestamp": "2026-03-06T03:20:05.417Z",
+      "durationMs": 1
+    },
+    {
+      "caseId": "EVAL-P03",
+      "caseName": "System Info Validity",
+      "suite": "response",
+      "severity": "fail",
+      "score": 0,
+      "message": "Exception: Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON",
+      "timestamp": "2026-03-06T03:20:05.417Z",
+      "durationMs": 0
+    },
+    {
+      "caseId": "EVAL-P04",
+      "caseName": "Agents API Latency",
+      "suite": "response",
+      "severity": "fail",
+      "score": 0,
+      "message": "Exception: Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON",
+      "timestamp": "2026-03-06T03:20:05.419Z",
+      "durationMs": 1
+    },
+    {
+      "caseId": "EVAL-S01",
+      "caseName": "Daemon Health Check",
+      "suite": "stability",
+      "severity": "pass",
+      "score": 100,
+      "message": "5/5 health checks passed",
+      "metrics": {
+        "successes": 5,
+        "total": 5
+      },
+      "timestamp": "2026-03-06T03:20:06.440Z",
+      "durationMs": 1021
+    },
+    {
+      "caseId": "EVAL-S02",
+      "caseName": "WebSocket Connectivity",
+      "suite": "stability",
+      "severity": "pass",
+      "score": 100,
+      "message": "Connected and received AGENTS_UPDATE in 91ms (36 agents)",
+      "metrics": {
+        "latencyMs": 91,
+        "agentCount": 36
+      },
+      "timestamp": "2026-03-06T03:20:06.560Z",
+      "durationMs": 120
+    },
+    {
+      "caseId": "EVAL-S03",
+      "caseName": "REST vs WebSocket Consistency",
+      "suite": "stability",
+      "severity": "fail",
+      "score": 0,
+      "message": "Exception: Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON",
+      "timestamp": "2026-03-06T03:20:06.561Z",
+      "durationMs": 1
+    }
+  ]
+}

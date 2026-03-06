@@ -1,0 +1,179 @@
+{
+  "runId": "eval-1772767248589",
+  "timestamp": "2026-03-06T03:20:48.589Z",
+  "totalCases": 10,
+  "passed": 9,
+  "warned": 0,
+  "failed": 1,
+  "overallScore": 90,
+  "suites": {
+    "resource": {
+      "total": 3,
+      "passed": 2,
+      "warned": 0,
+      "failed": 1,
+      "avgScore": 67
+    },
+    "response": {
+      "total": 4,
+      "passed": 4,
+      "warned": 0,
+      "failed": 0,
+      "avgScore": 100
+    },
+    "stability": {
+      "total": 3,
+      "passed": 3,
+      "warned": 0,
+      "failed": 0,
+      "avgScore": 100
+    }
+  },
+  "results": [
+    {
+      "caseId": "EVAL-R01",
+      "caseName": "Agent Memory Footprint",
+      "suite": "resource",
+      "severity": "pass",
+      "score": 100,
+      "message": "34 agents checked. Peak memory: 1215 MB. 0 exceed 2GB threshold.",
+      "metrics": {
+        "agentCount": 34,
+        "peakMemoryMB": 1214.9,
+        "overThreshold": 0
+      },
+      "timestamp": "2026-03-06T03:20:46.852Z",
+      "durationMs": 89
+    },
+    {
+      "caseId": "EVAL-R02",
+      "caseName": "Total CPU Utilization",
+      "suite": "resource",
+      "severity": "pass",
+      "score": 90,
+      "message": "Total CPU: 114.7% across 12 cores (9.6% of capacity)",
+      "metrics": {
+        "totalCpuPercent": 114.70000000000003,
+        "cpuCores": 12,
+        "capacityUsed": 9.558333333333335
+      },
+      "timestamp": "2026-03-06T03:20:46.967Z",
+      "durationMs": 114
+    },
+    {
+      "caseId": "EVAL-R03",
+      "caseName": "System Memory Headroom",
+      "suite": "resource",
+      "severity": "fail",
+      "score": 10,
+      "message": "1.3% memory free (0.6 / 48 GB)",
+      "metrics": {
+        "freeMemoryPercent": 1.250000000000003,
+        "totalGB": 48,
+        "usedGB": 47.4
+      },
+      "timestamp": "2026-03-06T03:20:47.041Z",
+      "durationMs": 74
+    },
+    {
+      "caseId": "EVAL-P01",
+      "caseName": "Health Endpoint Latency",
+      "suite": "response",
+      "severity": "pass",
+      "score": 100,
+      "message": "Responded in 0ms. Status: ok",
+      "metrics": {
+        "latencyMs": 0,
+        "status": "ok"
+      },
+      "timestamp": "2026-03-06T03:20:47.042Z",
+      "durationMs": 1
+    },
+    {
+      "caseId": "EVAL-P02",
+      "caseName": "Agents Data Completeness",
+      "suite": "response",
+      "severity": "pass",
+      "score": 100,
+      "message": "34 agents, 238/238 fields populated (100%)",
+      "metrics": {
+        "agentCount": 34,
+        "missingFields": 0,
+        "completenessPercent": 100
+      },
+      "timestamp": "2026-03-06T03:20:47.121Z",
+      "durationMs": 79
+    },
+    {
+      "caseId": "EVAL-P03",
+      "caseName": "System Info Validity",
+      "suite": "response",
+      "severity": "pass",
+      "score": 100,
+      "message": "All 5 fields valid",
+      "metrics": {
+        "passedChecks": 5,
+        "totalChecks": 5,
+        "hostname": "G0W09J6MKM"
+      },
+      "timestamp": "2026-03-06T03:20:47.193Z",
+      "durationMs": 72
+    },
+    {
+      "caseId": "EVAL-P04",
+      "caseName": "Agents API Latency",
+      "suite": "response",
+      "severity": "pass",
+      "score": 100,
+      "message": "Process scan + response in 92ms",
+      "metrics": {
+        "latencyMs": 92
+      },
+      "timestamp": "2026-03-06T03:20:47.285Z",
+      "durationMs": 92
+    },
+    {
+      "caseId": "EVAL-S01",
+      "caseName": "Daemon Health Check",
+      "suite": "stability",
+      "severity": "pass",
+      "score": 100,
+      "message": "5/5 health checks passed",
+      "metrics": {
+        "successes": 5,
+        "total": 5
+      },
+      "timestamp": "2026-03-06T03:20:48.298Z",
+      "durationMs": 1013
+    },
+    {
+      "caseId": "EVAL-S02",
+      "caseName": "WebSocket Connectivity",
+      "suite": "stability",
+      "severity": "pass",
+      "score": 100,
+      "message": "Connected and received AGENTS_UPDATE in 99ms (34 agents)",
+      "metrics": {
+        "latencyMs": 99,
+        "agentCount": 34
+      },
+      "timestamp": "2026-03-06T03:20:48.414Z",
+      "durationMs": 116
+    },
+    {
+      "caseId": "EVAL-S03",
+      "caseName": "REST vs WebSocket Consistency",
+      "suite": "stability",
+      "severity": "pass",
+      "score": 100,
+      "message": "REST: 34 agents, WS: 34 agents (diff: 0)",
+      "metrics": {
+        "restCount": 34,
+        "wsCount": 34,
+        "diff": 0
+      },
+      "timestamp": "2026-03-06T03:20:48.589Z",
+      "durationMs": 174
+    }
+  ]
+}

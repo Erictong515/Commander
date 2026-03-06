@@ -1,0 +1,22 @@
+{
+    "name": "commander-evals",
+    "version": "0.1.0",
+    "description": "Automated evaluation framework for Agents Commander local agents",
+    "type": "module",
+    "scripts": {
+        "eval": "tsx src/runner.ts",
+        "eval:resource": "tsx src/runner.ts --suite resource",
+        "eval:response": "tsx src/runner.ts --suite response",
+        "eval:stability": "tsx src/runner.ts --suite stability",
+        "eval:report": "tsx src/report.ts"
+    },
+    "dependencies": {
+        "chalk": "^5.3.0",
+        "ws": "^8.19.0"
+    },
+    "devDependencies": {
+        "@types/node": "^20.0.0",
+        "tsx": "^4.7.0",
+        "typescript": "^5.3.0"
+    }
+}
