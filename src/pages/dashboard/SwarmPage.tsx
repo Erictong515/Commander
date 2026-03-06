@@ -47,6 +47,7 @@ export function SwarmPage() {
     const [selectedAgent, setSelectedAgent] = useState<LocalAgent | null>(null);
     const [searchTerm, setSearchTerm] = useState('');
     const [typeFilter, setTypeFilter] = useState<string>('all');
+    const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
 
     useEffect(() => {
         let ws: WebSocket;
@@ -59,33 +60,12 @@ export function SwarmPage() {
                 setIsConnected(false);
                 retryTimeout = setTimeout(connect, 3000);
             };
-            ws.onmessage = async (event) => {
+            ws.onmessage = (event) => {
                 try {
                     const message = JSON.parse(event.data);
                     if (message.type === 'AGENTS_UPDATE') {
-                        const agentsData = message.data;
-
-                        // Fetch tasks for Claude CLI agents
-                        const enrichedAgents = await Promise.all(
-                            agentsData.map(async (agent: LocalAgent) => {
-                                if (agent.name === 'Claude CLI' && agent.sessionId) {
-                                    try {
-                                        const response = await fetch(
-                                            `http://localhost:3001/api/claude/sessions/${agent.sessionId}/tasks`
-                                        );
-                                        if (response.ok) {
-                                            const data = await response.json();
-                                            agent.tasks = data.tasks;
-                                        }
-                                    } catch (err) {
-                                        console.error('Failed to fetch tasks for agent', err);
-                                    }
-                                }
-                                return agent;
-                            })
-                        );
-
-                        setAgents(enrichedAgents);
+                        // Tasks are now included in the WebSocket message
+                        setAgents(message.data);
                     }
                 } catch (e) {
                     console.error('WebSocket parse error', e);
@@ -249,6 +229,7 @@ export function SwarmPage() {
                                     <th className="text-left py-3 px-4 font-medium">名称</th>
                                     <th className="text-left py-3 px-4 font-medium">类型</th>
                                     <th className="text-left py-3 px-4 font-medium">状态</th>
+                                    <th className="text-left py-3 px-4 font-medium">当前任务</th>
                                     <th className="text-left py-3 px-4 font-medium">环境</th>
                                     <th className="text-right py-3 px-4 font-medium">CPU</th>
                                     <th className="text-right py-3 px-4 font-medium">内存</th>
@@ -302,6 +283,11 @@ export function SwarmPage() {
                                             >
                                                 {agent.status}
                                             </Badge>
+                                        </td>
+                                        <td className="py-3 px-4 max-w-xs">
+                                            <div className="text-sm text-white/60 truncate" title={agent.currentTask || '—'}>
+                                                {agent.currentTask || '—'}
+                                            </div>
                                         </td>
                                         <td className="py-3 px-4 text-sm text-white/50">{agent.environment}</td>
                                         <td className="py-3 px-4 text-right">
@@ -404,48 +390,97 @@ export function SwarmPage() {
                         {/* Task List */}
                         {selectedAgent.tasks && selectedAgent.tasks.length > 0 && (
                             <div className="space-y-3">
-                                <div className="text-xs font-semibold text-white/60 uppercase tracking-wide">
-                                    任务列表 ({selectedAgent.tasks.length})
+                                {/* Task Statistics */}
+                                <div className="flex items-center justify-between">
+                                    <div className="text-xs font-semibold text-white/60 uppercase tracking-wide">
+                                        任务列表 ({selectedAgent.tasks.length})
+                                    </div>
+                                    <div className="flex gap-2">
+                                        {(() => {
+                                            const pending = selectedAgent.tasks.filter(t => t.status === 'pending').length;
+                                            const inProgress = selectedAgent.tasks.filter(t => t.status === 'in_progress').length;
+                                            const completed = selectedAgent.tasks.filter(t => t.status === 'completed').length;
+                                            return (
+                                                <>
+                                                    {completed > 0 && (
+                                                        <span className="text-[10px] text-green-400">
+                                                            ✓ {completed}
+                                                        </span>
+                                                    )}
+                                                    {inProgress > 0 && (
+                                                        <span className="text-[10px] text-blue-400">
+                                                            ⟳ {inProgress}
+                                                        </span>
+                                                    )}
+                                                    {pending > 0 && (
+                                                        <span className="text-[10px] text-white/40">
+                                                            ○ {pending}
+                                                        </span>
+                                                    )}
+                                                </>
+                                            );
+                                        })()}
+                                    </div>
                                 </div>
-                                <div className="space-y-2 max-h-64 overflow-y-auto">
-                                    {selectedAgent.tasks.map((task) => (
-                                        <div
-                                            key={task.taskId}
-                                            className="bg-white/[0.02] rounded-lg p-3 border border-white/5 hover:bg-white/[0.04] transition-colors"
-                                        >
-                                            <div className="flex items-start justify-between gap-2 mb-1.5">
-                                                <div className="text-sm text-white font-medium flex-1">
-                                                    {task.subject}
+
+                                <div className="space-y-2 max-h-64 overflow-y-auto scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+                                    {selectedAgent.tasks.map((task) => {
+                                        const isExpanded = expandedTaskId === task.taskId;
+                                        return (
+                                            <div
+                                                key={task.taskId}
+                                                className="bg-white/[0.02] rounded-lg border border-white/5 hover:border-white/10 transition-all cursor-pointer"
+                                                onClick={() => setExpandedTaskId(isExpanded ? null : task.taskId)}
+                                            >
+                                                <div className="p-3">
+                                                    <div className="flex items-start justify-between gap-2 mb-1.5">
+                                                        <div className="text-sm text-white font-medium flex-1">
+                                                            {task.subject}
+                                                        </div>
+                                                        <Badge
+                                                            variant="outline"
+                                                            className={`text-[10px] shrink-0 ${
+                                                                task.status === 'completed'
+                                                                    ? 'bg-green-500/10 text-green-400 border-green-500/20'
+                                                                    : task.status === 'in_progress'
+                                                                    ? 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+                                                                    : 'bg-white/5 text-white/40 border-white/10'
+                                                            }`}
+                                                        >
+                                                            {task.status === 'completed'
+                                                                ? '✓ 完成'
+                                                                : task.status === 'in_progress'
+                                                                ? '⟳ 进行中'
+                                                                : '○ 待处理'}
+                                                        </Badge>
+                                                    </div>
+
+                                                    {task.description && (
+                                                        <div className={`text-xs text-white/50 ${isExpanded ? '' : 'line-clamp-2'}`}>
+                                                            {task.description}
+                                                        </div>
+                                                    )}
+
+                                                    {task.activeForm && task.status === 'in_progress' && (
+                                                        <div className="text-xs text-blue-400/70 mt-1.5 italic flex items-center gap-1">
+                                                            <span className="inline-block w-1 h-1 rounded-full bg-blue-400 animate-pulse"></span>
+                                                            {task.activeForm}
+                                                        </div>
+                                                    )}
+
+                                                    {/* Expand indicator */}
+                                                    {task.description && (
+                                                        <div className="text-[10px] text-white/30 mt-2 flex items-center gap-1">
+                                                            <span>{isExpanded ? '收起' : '展开详情'}</span>
+                                                            <span className={`transition-transform ${isExpanded ? 'rotate-180' : ''}`}>
+                                                                ▼
+                                                            </span>
+                                                        </div>
+                                                    )}
                                                 </div>
-                                                <Badge
-                                                    variant="outline"
-                                                    className={`text-[10px] shrink-0 ${
-                                                        task.status === 'completed'
-                                                            ? 'bg-green-500/10 text-green-400 border-green-500/20'
-                                                            : task.status === 'in_progress'
-                                                            ? 'bg-blue-500/10 text-blue-400 border-blue-500/20'
-                                                            : 'bg-white/5 text-white/40 border-white/10'
-                                                    }`}
-                                                >
-                                                    {task.status === 'completed'
-                                                        ? '✓ 完成'
-                                                        : task.status === 'in_progress'
-                                                        ? '⟳ 进行中'
-                                                        : '○ 待处理'}
-                                                </Badge>
                                             </div>
-                                            {task.description && (
-                                                <div className="text-xs text-white/50 line-clamp-2">
-                                                    {task.description}
-                                                </div>
-                                            )}
-                                            {task.activeForm && task.status === 'in_progress' && (
-                                                <div className="text-xs text-blue-400/70 mt-1 italic">
-                                                    → {task.activeForm}
-                                                </div>
-                                            )}
-                                        </div>
-                                    ))}
+                                        );
+                                    })}
                                 </div>
                             </div>
                         )}

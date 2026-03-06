@@ -4,6 +4,7 @@ import cors from 'cors';
 import si from 'systeminformation';
 import http from 'http';
 import { claudeTracker } from './claudeTracker.js';
+import { ollamaTracker } from './ollamaTracker.js';
 
 const app = express();
 app.use(cors());
@@ -30,6 +31,15 @@ const EXCLUDED_PATTERNS = [
     'chrome_crashpad', 'keystone', 'chrome helper', 'gpu-process',
 ];
 
+interface ClaudeTask {
+    taskId: string;
+    subject: string;
+    description: string;
+    status: 'pending' | 'in_progress' | 'completed' | 'deleted';
+    owner?: string;
+    activeForm?: string;
+}
+
 interface AgentStatus {
     id: string;
     name: string;
@@ -42,6 +52,7 @@ interface AgentStatus {
     currentTask?: string; // For Claude CLI: the current task/message it's working on
     sessionId?: string; // For Claude CLI: the session identifier
     project?: string; // For Claude CLI: the working directory
+    tasks?: ClaudeTask[]; // For Claude CLI: list of tasks in current session
 }
 
 // Function to fetch system processes
@@ -53,13 +64,13 @@ async function getProcessAgents(): Promise<AgentStatus[]> {
         // Get Claude session info for enrichment
         const claudeSessions = await claudeTracker.getActiveSessionsWithValidation();
 
-        processes.list.forEach((proc) => {
+        for (const proc of processes.list) {
             const procName = proc.name.toLowerCase();
             const command = proc.command.toLowerCase();
 
             // Skip explicitly excluded processes
             if (EXCLUDED_PATTERNS.some(p => procName.includes(p) || command.includes(p))) {
-                return;
+                continue;
             }
 
             const rule = AGENT_RULES.find(r => r.match(procName, command));
@@ -84,11 +95,20 @@ async function getProcessAgents(): Promise<AgentStatus[]> {
                     agent.currentTask = mostRecentSession.currentTask;
                     agent.sessionId = mostRecentSession.sessionId;
                     agent.project = mostRecentSession.project;
+
+                    // Fetch tasks for this session
+                    try {
+                        const tasks = await claudeTracker.getSessionTasks(mostRecentSession.sessionId);
+                        agent.tasks = tasks;
+                    } catch (err) {
+                        console.error('Error fetching tasks for session:', err);
+                        agent.tasks = [];
+                    }
                 }
 
                 agents.push(agent);
             }
-        });
+        }
 
         return agents;
     } catch (error) {
@@ -100,23 +120,27 @@ async function getProcessAgents(): Promise<AgentStatus[]> {
 // Function to fetch active Ollama models
 async function getOllamaModels(): Promise<AgentStatus[]> {
     try {
-        const response = await fetch('http://localhost:11434/api/ps');
-        if (!response.ok) return [];
-
-        const data = await response.json();
+        // Get running models with task information
+        const sessions = await ollamaTracker.getActiveSessionsWithTasks();
         const agents: AgentStatus[] = [];
 
-        if (data.models && Array.isArray(data.models)) {
-            data.models.forEach((model: any) => {
-                agents.push({
-                    id: `ollama-${model.name}`,
-                    name: model.name,
-                    type: 'Local-LLM',
-                    status: 'processing', // Since it's loaded in RAM
-                    cpu: 0, // Ollama API doesn't standardly expose precise per-model CPU in /ps yet
-                    memory: Number((model.size / (1024 * 1024)).toFixed(1)), // Bytes to MB
-                    environment: 'Ollama Engine',
-                });
+        for (const session of sessions) {
+            agents.push({
+                id: session.sessionId,
+                name: session.model,
+                type: 'Local-LLM',
+                status: 'processing', // Since it's loaded in RAM
+                cpu: 0, // Ollama API doesn't standardly expose precise per-model CPU in /ps yet
+                memory: Number((session.size / (1024 * 1024)).toFixed(1)), // Bytes to MB
+                environment: 'Ollama Engine',
+                currentTask: session.currentTask,
+                sessionId: session.sessionId,
+                tasks: session.tasks.map(t => ({
+                    taskId: t.taskId,
+                    subject: t.subject,
+                    description: t.description,
+                    status: t.status === 'active' ? 'in_progress' as const : 'pending' as const,
+                })),
             });
         }
 
@@ -248,6 +272,40 @@ app.get('/api/claude/sessions/:sessionId/tasks', async (req, res) => {
     try {
         const tasks = await claudeTracker.getSessionTasks(req.params.sessionId);
         res.json({ tasks, timestamp: Date.now() });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Ollama Tracker API: get all active Ollama sessions
+app.get('/api/ollama/sessions', async (_, res) => {
+    try {
+        const sessions = await ollamaTracker.getActiveSessionsWithTasks();
+        res.json({ sessions, timestamp: Date.now() });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Ollama Tracker API: get specific session details
+app.get('/api/ollama/sessions/:modelName', async (req, res) => {
+    try {
+        const session = await ollamaTracker.getSessionDetails(req.params.modelName);
+        if (session) {
+            res.json({ session });
+        } else {
+            res.status(404).json({ error: 'Model session not found' });
+        }
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Ollama Tracker API: check if Ollama is running
+app.get('/api/ollama/health', async (_, res) => {
+    try {
+        const isRunning = await ollamaTracker.isOllamaRunning();
+        res.json({ running: isRunning, timestamp: Date.now() });
     } catch (err: any) {
         res.status(500).json({ error: err.message });
     }
