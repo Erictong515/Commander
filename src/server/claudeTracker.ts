@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { ClaudeTaskExtractor } from './taskTrackerFactory.js';
 
 interface ClaudeHistoryEntry {
     display: string;
@@ -26,6 +27,37 @@ interface ClaudeSessionInfo {
     startTime: number;
     lastActive: number;
     tasks?: ClaudeTask[];
+}
+
+/**
+ * Universal task pattern matchers for different models and languages
+ */
+const TASK_PATTERNS = {
+    // English patterns
+    taskKeywords: ['task', 'fix', 'implement', 'create', 'update', 'debug', 'refactor', 'add', 'remove'],
+    // Chinese patterns
+    taskKeywordsCN: ['任务', '修复', '实现', '创建', '更新', '调试', '重构', '添加', '删除', '解决', '优化'],
+    // Common action prefixes to remove
+    actionPrefixes: /^(选|选择|执行|运行|帮我|请|发现|看到|现在|然后|help|please|now|run)\s*/gi,
+};
+
+/**
+ * Extract task summary from user input (multi-language support)
+ */
+function extractTaskSummary(text: string, maxLength: number = 50): string {
+    if (!text) return 'Unknown task';
+
+    let cleaned = text
+        .replace(TASK_PATTERNS.actionPrefixes, '')
+        .replace(/^[A-Z]\s*/g, '') // Remove single letter choices
+        .trim();
+
+    // Truncate if too long
+    if (cleaned.length > maxLength) {
+        cleaned = cleaned.substring(0, maxLength - 3) + '...';
+    }
+
+    return cleaned || text.substring(0, maxLength);
 }
 
 /**
@@ -120,38 +152,99 @@ export class ClaudeTracker {
     }
 
     /**
-     * Check if a session file exists in projects directory
+     * Check if a session file exists in projects directory and get its last modified time
      */
-    isSessionActive(sessionId: string): boolean {
+    getSessionFileInfo(sessionId: string): { exists: boolean; mtime: number } {
         try {
             // Check in all project subdirectories
             const projectDirs = fs.readdirSync(this.projectsPath);
 
             for (const dir of projectDirs) {
-                const sessionFiles = fs.readdirSync(path.join(this.projectsPath, dir));
-                if (sessionFiles.some(file => file.includes(sessionId))) {
-                    return true;
+                const sessionFilePath = path.join(this.projectsPath, dir, `${sessionId}.jsonl`);
+                if (fs.existsSync(sessionFilePath)) {
+                    const stats = fs.statSync(sessionFilePath);
+                    return { exists: true, mtime: stats.mtimeMs };
                 }
             }
 
-            return false;
+            return { exists: false, mtime: 0 };
         } catch {
-            return false;
+            return { exists: false, mtime: 0 };
         }
     }
 
     /**
+     * Check if a session file exists in projects directory
+     */
+    isSessionActive(sessionId: string): boolean {
+        return this.getSessionFileInfo(sessionId).exists;
+    }
+
+    /**
      * Get all active sessions with file existence check
+     * Uses file modification time as the true indicator of session activity
      */
     async getActiveSessionsWithValidation(): Promise<ClaudeSessionInfo[]> {
         const sessions = await this.getActiveSessions();
 
-        // Filter to only include sessions that have actual session files
-        return sessions.filter(session => {
-            // If session was active in the last 2 minutes, assume it's still running
-            const twoMinutesAgo = Date.now() - (2 * 60 * 1000);
-            return session.lastActive > twoMinutesAgo || this.isSessionActive(session.sessionId);
-        });
+        const validSessions: ClaudeSessionInfo[] = [];
+        const twoMinutesAgo = Date.now() - (2 * 60 * 1000);
+
+        for (const session of sessions) {
+            const fileInfo = this.getSessionFileInfo(session.sessionId);
+
+            // Only consider sessions whose files were modified in the last 2 minutes
+            // This is the true indicator that the session is actively being written to
+            if (!fileInfo.exists) {
+                continue;
+            }
+
+            const isFileRecent = fileInfo.mtime > twoMinutesAgo;
+
+            // Skip sessions with stale files - they're not actively running
+            if (!isFileRecent) {
+                continue;
+            }
+
+            // Get tasks for this session
+            const tasks = await this.getSessionTasks(session.sessionId);
+
+            // Find the current task (in_progress or most recent pending)
+            let currentTask = session.currentTask; // fallback to user input
+
+            const inProgressTask = tasks.find(t => t.status === 'in_progress');
+            if (inProgressTask) {
+                // Use activeForm if available (e.g., "Fixing authentication bug"),
+                // otherwise use subject
+                currentTask = inProgressTask.activeForm || inProgressTask.subject;
+            } else {
+                // If no in_progress task, check for recent pending tasks
+                const pendingTask = tasks.find(t => t.status === 'pending');
+                if (pendingTask) {
+                    currentTask = pendingTask.subject;
+                } else if (tasks.length > 0) {
+                    // If there are any tasks, use the most recent one's subject
+                    const latestTask = tasks[tasks.length - 1];
+                    currentTask = latestTask.activeForm || latestTask.subject;
+                } else {
+                    // No tasks found - use universal task extraction
+                    currentTask = extractTaskSummary(session.currentTask);
+                }
+            }
+
+            validSessions.push({
+                ...session,
+                // Use file mtime as the true lastActive time
+                lastActive: fileInfo.mtime,
+                currentTask,
+                tasks,
+            });
+        }
+
+        // Sort by file modification time (most recently modified first)
+        validSessions.sort((a, b) => b.lastActive - a.lastActive);
+
+        return validSessions;
     }
 
     /**
@@ -159,7 +252,6 @@ export class ClaudeTracker {
      */
     async getSessionTasks(sessionId: string): Promise<ClaudeTask[]> {
         try {
-            // Find the session file
             const projectDirs = fs.readdirSync(this.projectsPath);
             let sessionFilePath: string | null = null;
 
@@ -178,71 +270,9 @@ export class ClaudeTracker {
             const content = fs.readFileSync(sessionFilePath, 'utf-8');
             const lines = content.trim().split('\n').filter(line => line.trim());
 
-            const tasksMap = new Map<string, ClaudeTask>();
-
-            for (const line of lines) {
-                try {
-                    const entry = JSON.parse(line);
-
-                    // Look for tool_use with TaskCreate or TaskUpdate
-                    if (entry.message && entry.message.content) {
-                        for (const item of entry.message.content) {
-                            if (item.type === 'tool_use') {
-                                if (item.name === 'TaskCreate' && item.input) {
-                                    // Generate a simple task ID if not present
-                                    const taskId = `task-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-                                    tasksMap.set(taskId, {
-                                        taskId,
-                                        subject: item.input.subject || 'Untitled Task',
-                                        description: item.input.description || '',
-                                        status: 'pending',
-                                        activeForm: item.input.activeForm,
-                                    });
-                                } else if (item.name === 'TaskUpdate' && item.input && item.input.taskId) {
-                                    const existingTask = tasksMap.get(item.input.taskId);
-                                    if (existingTask) {
-                                        // Update task properties
-                                        if (item.input.status) existingTask.status = item.input.status;
-                                        if (item.input.subject) existingTask.subject = item.input.subject;
-                                        if (item.input.description) existingTask.description = item.input.description;
-                                        if (item.input.owner) existingTask.owner = item.input.owner;
-                                        if (item.input.activeForm) existingTask.activeForm = item.input.activeForm;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Also check tool_result for task IDs returned by TaskCreate
-                    if (entry.message && entry.message.content) {
-                        for (const item of entry.message.content) {
-                            if (item.type === 'tool_result' && item.content) {
-                                try {
-                                    const result = typeof item.content === 'string' ? JSON.parse(item.content) : item.content;
-                                    if (result.taskId) {
-                                        // Update the temporary task ID with the real one
-                                        const tasks = Array.from(tasksMap.values());
-                                        const lastTask = tasks[tasks.length - 1];
-                                        if (lastTask && lastTask.taskId.startsWith('task-')) {
-                                            tasksMap.delete(lastTask.taskId);
-                                            lastTask.taskId = result.taskId;
-                                            tasksMap.set(result.taskId, lastTask);
-                                        }
-                                    }
-                                } catch {
-                                    // Ignore parsing errors
-                                }
-                            }
-                        }
-                    }
-                } catch (err) {
-                    // Skip malformed lines
-                    continue;
-                }
-            }
-
-            // Filter out deleted tasks
-            return Array.from(tasksMap.values()).filter(task => task.status !== 'deleted');
+            // Use Claude-specific task extractor
+            const extractor = new ClaudeTaskExtractor();
+            return extractor.extractTasks(lines);
         } catch (error) {
             console.error('Error reading session tasks:', error);
             return [];

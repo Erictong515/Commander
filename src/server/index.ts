@@ -5,9 +5,26 @@ import si from 'systeminformation';
 import http from 'http';
 import { claudeTracker } from './claudeTracker.js';
 import { ollamaTracker } from './ollamaTracker.js';
+import {
+    orchestrator,
+    taskQueue,
+    eventBus,
+    messageRouter,
+    handoffManager,
+    conflictResolver,
+    type CreateTaskRequest,
+} from './controlPlane/index.js';
+import { evalPipeline } from './evals/index.js';
+import {
+    adapterRegistry,
+    claudeAdapter,
+    ollamaAdapter,
+    geminiAdapter,
+} from './adapters/index.js';
 
 const app = express();
 app.use(cors());
+app.use(express.json()); // Must be before routes for req.body parsing
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
@@ -21,14 +38,18 @@ const AGENT_RULES = [
     { id: 'codex', label: 'Codex CLI', type: 'CLI' as const, match: (name: string, cmd: string) => name === 'codex' || cmd === 'codex' || cmd.includes('/codex ') || cmd.startsWith('codex ') },
     { id: 'gcloud', label: 'Google CLI', type: 'CLI' as const, match: (name: string, cmd: string) => name === 'gcloud' || cmd === 'gcloud' || cmd.includes('/gcloud ') || cmd.startsWith('gcloud ') },
     { id: 'gemini', label: 'Gemini CLI', type: 'CLI' as const, match: (name: string, cmd: string) => name === 'gemini' || cmd === 'gemini' || cmd.includes('/gemini ') || cmd.startsWith('gemini ') },
-    { id: 'ollama', label: 'Ollama Daemon', type: 'Local-LLM' as const, match: (name: string, cmd: string) => name === 'ollama' || (cmd.includes('ollama') && !cmd.includes('node')) },
+    // Ollama Server (API service) - ollama serve
+    { id: 'ollama-server', label: 'Ollama Server', type: 'Local-LLM' as const, match: (_name: string, cmd: string) => cmd.includes('ollama serve') || cmd.includes('ollama-serve') },
+    // Ollama GUI App - exclude from agent list (it's just the menu bar app)
+    { id: 'ollama-gui', label: 'Ollama GUI', type: 'Local-LLM' as const, match: (_name: string, cmd: string) => cmd.includes('Ollama.app/Contents/MacOS/Ollama') && !cmd.includes('serve') },
 ];
 
-// Processes to explicitly exclude (browser, drivers, helpers)
+// Processes to explicitly exclude (browser, drivers, helpers, GUI apps)
 const EXCLUDED_PATTERNS = [
     'google chrome', 'googlechrome', 'google drive', 'googledrive',
     'googleupdate', 'google software', 'googlesoftware', 'crashpad',
     'chrome_crashpad', 'keystone', 'chrome helper', 'gpu-process',
+    'Ollama.app/Contents/MacOS/Ollama', // Ollama GUI app (menu bar), not the server
 ];
 
 interface ClaudeTask {
@@ -94,18 +115,12 @@ async function getProcessAgents(): Promise<AgentStatus[]> {
                 // Only assign session info to the FIRST Claude process to avoid duplicates
                 if (rule.id === 'claude' && claudeSessions.length > 0 && !claudeSessionAssigned) {
                     const mostRecentSession = claudeSessions[0];
-                    agent.currentTask = mostRecentSession.currentTask;
+                    agent.currentTask = mostRecentSession.currentTask; // Now contains task subject/activeForm
                     agent.sessionId = mostRecentSession.sessionId;
                     agent.project = mostRecentSession.project;
 
-                    // Fetch tasks for this session
-                    try {
-                        const tasks = await claudeTracker.getSessionTasks(mostRecentSession.sessionId);
-                        agent.tasks = tasks;
-                    } catch (err) {
-                        console.error('Error fetching tasks for session:', err);
-                        agent.tasks = [];
-                    }
+                    // Tasks are already fetched in getActiveSessionsWithValidation
+                    agent.tasks = mostRecentSession.tasks || [];
 
                     claudeSessionAssigned = true;
                 }
@@ -133,17 +148,20 @@ async function getOllamaModels(): Promise<AgentStatus[]> {
                 id: session.sessionId,
                 name: session.model,
                 type: 'Local-LLM',
-                status: 'processing', // Since it's loaded in RAM
+                status: session.isLoaded ? 'processing' : 'idle',
                 cpu: 0, // Ollama API doesn't standardly expose precise per-model CPU in /ps yet
                 memory: Number((session.size / (1024 * 1024)).toFixed(1)), // Bytes to MB
-                environment: 'Ollama Engine',
+                environment: session.isLoaded ? 'Ollama Engine (Active)' : 'Ollama Engine',
                 currentTask: session.currentTask,
                 sessionId: session.sessionId,
                 tasks: session.tasks.map(t => ({
                     taskId: t.taskId,
                     subject: t.subject,
                     description: t.description,
-                    status: t.status === 'active' ? 'in_progress' as const : 'pending' as const,
+                    // Map Ollama status to frontend status
+                    status: t.status === 'active' ? 'in_progress' as const
+                          : t.status === 'completed' ? 'completed' as const
+                          : 'pending' as const,
                 })),
             });
         }
@@ -315,9 +333,786 @@ app.get('/api/ollama/health', async (_, res) => {
     }
 });
 
-app.use(express.json());
+// Ollama Task Tracking API: start a task
+app.post('/api/ollama/tasks/start', (req, res) => {
+    try {
+        const { model, subject, description } = req.body;
+        if (!model || !subject) {
+            res.status(400).json({ error: 'model and subject are required' });
+            return;
+        }
+        const taskId = ollamaTracker.startTask(model, subject, description || '');
+        res.json({ taskId, status: 'started', model, subject });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Ollama Task Tracking API: complete a task
+app.post('/api/ollama/tasks/:taskId/complete', (req, res) => {
+    try {
+        const { taskId } = req.params;
+        const { success } = req.body;
+        ollamaTracker.completeTask(taskId, success !== false);
+        res.json({ taskId, status: success !== false ? 'completed' : 'failed' });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Ollama Task Tracking API: get active tasks
+app.get('/api/ollama/tasks/active', (_, res) => {
+    try {
+        const tasks = ollamaTracker.getAllActiveTasks();
+        res.json({ tasks, count: tasks.length });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Ollama Task Tracking API: get task history
+app.get('/api/ollama/tasks/history', (req, res) => {
+    try {
+        const limit = parseInt(req.query.limit as string) || 10;
+        const history = ollamaTracker.getTaskHistory(limit);
+        res.json({ history, count: history.length });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ============================================================================
+// CONTROL PLANE APIs (Agent Swarm Orchestration)
+// ============================================================================
+
+// Submit a new task to the orchestrator
+app.post('/api/tasks', (req, res) => {
+    try {
+        const request: CreateTaskRequest = req.body;
+
+        if (!request.prompt) {
+            res.status(400).json({ error: 'prompt is required' });
+            return;
+        }
+
+        const task = orchestrator.submitTask(request);
+        const position = taskQueue.getPosition(task.id);
+
+        res.status(201).json({
+            task,
+            position,
+            message: 'Task queued successfully',
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get all tasks
+app.get('/api/tasks', (_, res) => {
+    try {
+        const stats = taskQueue.getStats();
+        const queued = taskQueue.getByStatus('queued').map(t => ({
+            id: t.id,
+            priority: t.priority,
+            status: t.lifecycle.status,
+            position: taskQueue.getPosition(t.id),
+            createdAt: t.lifecycle.createdAt,
+        }));
+
+        res.json({
+            stats,
+            tasks: queued,
+            timestamp: Date.now(),
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get task by ID
+app.get('/api/tasks/:taskId', (req, res) => {
+    try {
+        const task = taskQueue.get(req.params.taskId);
+        if (task) {
+            res.json({ task });
+        } else {
+            res.status(404).json({ error: 'Task not found' });
+        }
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Cancel a task
+app.delete('/api/tasks/:taskId', (req, res) => {
+    try {
+        const success = taskQueue.cancel(req.params.taskId);
+        if (success) {
+            res.json({ success: true, message: 'Task cancelled' });
+        } else {
+            res.status(404).json({ error: 'Task not found or already completed' });
+        }
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get scheduler status
+app.get('/api/scheduler/status', (_, res) => {
+    try {
+        const stats = orchestrator.getStats();
+        const agents = orchestrator.getAgents().map(a => ({
+            id: a.id,
+            name: a.name,
+            adapter: a.adapter,
+            status: a.status,
+            currentTasks: a.currentTasks.length,
+            metrics: a.metrics,
+        }));
+
+        res.json({
+            scheduler: stats,
+            agents,
+            timestamp: Date.now(),
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get queue status
+app.get('/api/scheduler/queue', (_, res) => {
+    try {
+        const eligible = taskQueue.getEligibleTasks();
+        const deadlocks = taskQueue.detectDeadlocks();
+
+        res.json({
+            queueDepth: taskQueue.depth,
+            totalTasks: taskQueue.size,
+            eligibleTasks: eligible.map(t => ({
+                id: t.id,
+                priority: t.priority,
+                type: t.type,
+                createdAt: t.lifecycle.createdAt,
+            })),
+            deadlocks: deadlocks.length > 0 ? deadlocks : undefined,
+            timestamp: Date.now(),
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Pause scheduler
+app.post('/api/scheduler/pause', (_, res) => {
+    try {
+        orchestrator.stop();
+        res.json({ success: true, message: 'Scheduler paused' });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Resume scheduler
+app.post('/api/scheduler/resume', (_, res) => {
+    try {
+        orchestrator.start();
+        res.json({ success: true, message: 'Scheduler resumed' });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get advanced scheduler metrics
+app.get('/api/scheduler/metrics', (_, res) => {
+    try {
+        const metrics = orchestrator.getSchedulerMetrics();
+        res.json({
+            metrics,
+            timestamp: Date.now(),
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get dispatch history
+app.get('/api/scheduler/history', (req, res) => {
+    try {
+        const limit = parseInt(req.query.limit as string) || 50;
+        const history = orchestrator.getDispatchHistory(limit);
+        res.json({
+            history,
+            count: history.length,
+            timestamp: Date.now(),
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get routing recommendations for a task
+app.post('/api/scheduler/recommend', (req, res) => {
+    try {
+        const task = taskQueue.get(req.body.taskId);
+        if (!task) {
+            res.status(404).json({ error: 'Task not found' });
+            return;
+        }
+
+        const recommendations = orchestrator.getRoutingRecommendations(task);
+        res.json({
+            taskId: req.body.taskId,
+            ...recommendations,
+            timestamp: Date.now(),
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get event history
+app.get('/api/events', (req, res) => {
+    try {
+        const limit = parseInt(req.query.limit as string) || 100;
+        const since = req.query.since ? parseInt(req.query.since as string) : undefined;
+        const type = req.query.type as string | undefined;
+
+        const events = eventBus.getHistory({
+            type: type as any,
+            since,
+            limit,
+        });
+
+        res.json({
+            events,
+            stats: eventBus.getStats(),
+            timestamp: Date.now(),
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get registry statistics
+app.get('/api/adapters/stats', (_, res) => {
+    try {
+        const stats = adapterRegistry.getStats();
+        res.json({
+            ...stats,
+            timestamp: Date.now(),
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get agents by adapter type
+app.get('/api/adapters/:type/agents', (req, res) => {
+    try {
+        const adapter = adapterRegistry.getAdapter(req.params.type as any);
+        if (!adapter) {
+            res.status(404).json({ error: 'Adapter not found' });
+            return;
+        }
+
+        const agents = adapter.getAgents();
+        res.json({
+            adapter: req.params.type,
+            agents,
+            count: agents.length,
+            timestamp: Date.now(),
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ============================================================================
+// IACMP (Inter-Agent Communication Message Protocol) APIs
+// ============================================================================
+
+// Get message history
+app.get('/api/messages/history', (req, res) => {
+    try {
+        const limit = parseInt(req.query.limit as string) || 50;
+        const type = req.query.type as string | undefined;
+        const agentId = req.query.agentId as string | undefined;
+        const since = req.query.since ? parseInt(req.query.since as string) : undefined;
+
+        const messages = messageRouter.getHistory({
+            type: type as any,
+            agentId,
+            since,
+            limit,
+        });
+
+        res.json({
+            messages,
+            count: messages.length,
+            timestamp: Date.now(),
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get message statistics
+app.get('/api/messages/stats', (_, res) => {
+    try {
+        const stats = messageRouter.getStats();
+        res.json({
+            ...stats,
+            timestamp: Date.now(),
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Clear message history
+app.delete('/api/messages/history', (_, res) => {
+    try {
+        messageRouter.clearHistory();
+        res.json({ success: true, message: 'Message history cleared' });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ============================================================================
+// Handoff Management APIs
+// ============================================================================
+
+// Initiate a task handoff
+app.post('/api/handoffs', async (req, res) => {
+    try {
+        const { taskId, fromAgentId, toAgentId, reason, context } = req.body;
+
+        if (!taskId || !fromAgentId || !toAgentId) {
+            res.status(400).json({ error: 'taskId, fromAgentId, and toAgentId are required' });
+            return;
+        }
+
+        const task = taskQueue.get(taskId);
+        if (!task) {
+            res.status(404).json({ error: 'Task not found' });
+            return;
+        }
+
+        const fromAgent = orchestrator.getAgent(fromAgentId);
+        const toAgent = orchestrator.getAgent(toAgentId);
+
+        if (!fromAgent) {
+            res.status(404).json({ error: 'Source agent not found' });
+            return;
+        }
+        if (!toAgent) {
+            res.status(404).json({ error: 'Target agent not found' });
+            return;
+        }
+
+        const result = await handoffManager.initiateHandoff(
+            task,
+            fromAgent,
+            toAgent,
+            reason || 'Manual handoff request',
+            context
+        );
+
+        if (result.success) {
+            res.status(201).json({
+                ...result,
+                message: 'Handoff initiated successfully',
+            });
+        } else {
+            res.status(500).json(result);
+        }
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get pending handoffs
+app.get('/api/handoffs', (req, res) => {
+    try {
+        const taskId = req.query.taskId as string | undefined;
+        const agentId = req.query.agentId as string | undefined;
+        const status = req.query.status as string | undefined;
+        const limit = parseInt(req.query.limit as string) || 50;
+
+        // Get both pending and history
+        const pending = handoffManager.getPendingHandoffs();
+        const history = handoffManager.getHistory({
+            taskId,
+            agentId,
+            status: status as any,
+            limit,
+        });
+
+        res.json({
+            pending,
+            history,
+            stats: handoffManager.getStats(),
+            timestamp: Date.now(),
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get handoff by ID
+app.get('/api/handoffs/:handoffId', (req, res) => {
+    try {
+        const handoff = handoffManager.getHandoff(req.params.handoffId);
+        if (handoff) {
+            res.json({ handoff });
+        } else {
+            res.status(404).json({ error: 'Handoff not found' });
+        }
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Cancel a pending handoff
+app.delete('/api/handoffs/:handoffId', (req, res) => {
+    try {
+        const success = handoffManager.cancelHandoff(req.params.handoffId);
+        if (success) {
+            res.json({ success: true, message: 'Handoff cancelled' });
+        } else {
+            res.status(404).json({ error: 'Handoff not found or not pending' });
+        }
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Find best handoff target for a task
+app.post('/api/handoffs/recommend', (req, res) => {
+    try {
+        const { taskId, currentAgentId } = req.body;
+
+        if (!taskId || !currentAgentId) {
+            res.status(400).json({ error: 'taskId and currentAgentId are required' });
+            return;
+        }
+
+        const task = taskQueue.get(taskId);
+        if (!task) {
+            res.status(404).json({ error: 'Task not found' });
+            return;
+        }
+
+        const currentAgent = orchestrator.getAgent(currentAgentId);
+        if (!currentAgent) {
+            res.status(404).json({ error: 'Current agent not found' });
+            return;
+        }
+
+        const availableAgents = orchestrator.getAgents();
+        const recommendation = handoffManager.findHandoffTarget(task, currentAgent, availableAgents);
+
+        res.json({
+            taskId,
+            currentAgentId,
+            recommendedAgent: recommendation ? {
+                id: recommendation.id,
+                name: recommendation.name,
+                adapter: recommendation.adapter,
+                status: recommendation.status,
+                currentLoad: recommendation.metrics.currentLoad,
+            } : null,
+            availableAgentsCount: availableAgents.filter(a =>
+                a.id !== currentAgentId &&
+                a.status !== 'offline' &&
+                a.status !== 'error'
+            ).length,
+            timestamp: Date.now(),
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ============================================================================
+// Conflict Resolution APIs
+// ============================================================================
+
+// Get active conflicts
+app.get('/api/conflicts', (req, res) => {
+    try {
+        const type = req.query.type as string | undefined;
+        const severity = req.query.severity as string | undefined;
+        const limit = parseInt(req.query.limit as string) || 50;
+
+        const active = conflictResolver.getActiveConflicts();
+        const history = conflictResolver.getHistory({
+            type: type as any,
+            severity,
+            limit,
+        });
+
+        res.json({
+            active,
+            history,
+            stats: conflictResolver.getStats(),
+            timestamp: Date.now(),
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get conflict by ID
+app.get('/api/conflicts/:conflictId', (req, res) => {
+    try {
+        const conflict = conflictResolver.getConflict(req.params.conflictId);
+        if (conflict) {
+            res.json({ conflict });
+        } else {
+            res.status(404).json({ error: 'Conflict not found' });
+        }
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get conflict statistics
+app.get('/api/conflicts/stats', (_, res) => {
+    try {
+        const stats = conflictResolver.getStats();
+        res.json({
+            ...stats,
+            timestamp: Date.now(),
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Run conflict detection manually
+app.post('/api/conflicts/detect', (_, res) => {
+    try {
+        const detected = conflictResolver.runDetection();
+        res.json({
+            detected,
+            count: detected.length,
+            timestamp: Date.now(),
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Resolve a specific conflict
+app.post('/api/conflicts/:conflictId/resolve', async (req, res) => {
+    try {
+        const result = await conflictResolver.resolve(req.params.conflictId);
+        res.json({
+            conflictId: req.params.conflictId,
+            ...result,
+            timestamp: Date.now(),
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Resolve all active conflicts
+app.post('/api/conflicts/resolve-all', async (_, res) => {
+    try {
+        const result = await conflictResolver.resolveAll();
+        res.json({
+            ...result,
+            timestamp: Date.now(),
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Start/stop conflict detection
+app.post('/api/conflicts/start', (req, res) => {
+    try {
+        const interval = parseInt(req.query.interval as string) || 5000;
+        conflictResolver.start(interval);
+        res.json({ success: true, message: `Conflict detection started with ${interval}ms interval` });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/conflicts/stop', (_, res) => {
+    try {
+        conflictResolver.stop();
+        res.json({ success: true, message: 'Conflict detection stopped' });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ============================================================================
+// Eval Pipeline APIs
+// ============================================================================
+
+// Run eval immediately
+app.post('/api/evals/run', async (req, res) => {
+    try {
+        const suite = (req.query.suite as string) || 'all';
+        const report = await evalPipeline.runEval(suite as any);
+        res.json({
+            report,
+            timestamp: Date.now(),
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get latest eval report
+app.get('/api/evals/latest', (_, res) => {
+    try {
+        const report = evalPipeline.getLatestReport();
+        if (report) {
+            res.json({ report });
+        } else {
+            res.status(404).json({ error: 'No eval reports available' });
+        }
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get eval history
+app.get('/api/evals/history', (req, res) => {
+    try {
+        const limit = parseInt(req.query.limit as string) || 20;
+        const reports = evalPipeline.getReports(limit);
+        res.json({
+            reports,
+            count: reports.length,
+            timestamp: Date.now(),
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get pipeline stats
+app.get('/api/evals/stats', (_, res) => {
+    try {
+        const stats = evalPipeline.getStats();
+        res.json({
+            ...stats,
+            timestamp: Date.now(),
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Add eval schedule
+app.post('/api/evals/schedules', (req, res) => {
+    try {
+        const { suite, intervalMs } = req.body;
+        if (!suite || !intervalMs) {
+            res.status(400).json({ error: 'suite and intervalMs are required' });
+            return;
+        }
+
+        const scheduleId = evalPipeline.addSchedule(suite, intervalMs);
+        res.status(201).json({
+            scheduleId,
+            message: `Schedule added: ${suite} every ${intervalMs / 1000}s`,
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Remove eval schedule
+app.delete('/api/evals/schedules/:scheduleId', (req, res) => {
+    try {
+        const success = evalPipeline.removeSchedule(req.params.scheduleId);
+        if (success) {
+            res.json({ success: true, message: 'Schedule removed' });
+        } else {
+            res.status(404).json({ error: 'Schedule not found' });
+        }
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Toggle schedule
+app.patch('/api/evals/schedules/:scheduleId', (req, res) => {
+    try {
+        const { enabled } = req.body;
+        if (typeof enabled !== 'boolean') {
+            res.status(400).json({ error: 'enabled (boolean) is required' });
+            return;
+        }
+
+        const success = evalPipeline.toggleSchedule(req.params.scheduleId, enabled);
+        if (success) {
+            res.json({ success: true, message: `Schedule ${enabled ? 'enabled' : 'disabled'}` });
+        } else {
+            res.status(404).json({ error: 'Schedule not found' });
+        }
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Start default schedules
+app.post('/api/evals/start', (_, res) => {
+    try {
+        evalPipeline.startDefaultSchedules();
+        res.json({ success: true, message: 'Default eval schedules started' });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Stop all schedules
+app.post('/api/evals/stop', (_, res) => {
+    try {
+        evalPipeline.stopAll();
+        res.json({ success: true, message: 'All eval schedules stopped' });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ============================================================================
+// Server Startup
+// ============================================================================
 
 server.listen(PORT, () => {
     console.log(`Local Agent Tracker daemon running on http://localhost:${PORT}`);
     console.log(`WebSocket server running on ws://localhost:${PORT}`);
+
+    // Register adapters
+    adapterRegistry.register(claudeAdapter);
+    adapterRegistry.register(ollamaAdapter);
+    adapterRegistry.register(geminiAdapter);
+
+    // Start all adapters
+    adapterRegistry.startAll();
+    console.log(`[Control Plane] Adapters started: Claude, Ollama, Gemini`);
+
+    // Start the orchestrator scheduler
+    orchestrator.start();
+    console.log(`[Control Plane] Orchestrator started - Agent Swarm ready`);
+
+    // Start conflict detection
+    conflictResolver.start(5000);
+    console.log(`[Control Plane] Conflict resolver started`);
+
+    // Start eval pipeline with default schedules
+    evalPipeline.startDefaultSchedules();
+    console.log(`[Control Plane] Eval pipeline started`);
 });
