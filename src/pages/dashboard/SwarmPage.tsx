@@ -17,10 +17,13 @@ import {
     LayoutList,
     LayoutGrid,
     Zap,
+    ChevronDown,
+    ChevronUp,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { GroupedAgentView } from './GroupedAgentView';
 import { TaskDispatchDrawer } from '@/components/custom/TaskDispatchDrawer';
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 
 interface ClaudeTask {
     taskId: string;
@@ -55,6 +58,8 @@ export function SwarmPage() {
     const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
     const [viewMode, setViewMode] = useState<'grouped' | 'table'>('grouped'); // 新增：视图模式
     const [showDispatch, setShowDispatch] = useState(false);
+    const [historyData, setHistoryData] = useState<Array<{ time: string; cpu: number; memory: number }>>([]);
+    const [historyOpen, setHistoryOpen] = useState(false);
 
     useEffect(() => {
         let ws: WebSocket;
@@ -94,8 +99,30 @@ export function SwarmPage() {
             if (updatedAgent && JSON.stringify(updatedAgent) !== JSON.stringify(selectedAgent)) {
                 setSelectedAgent(updatedAgent);
             }
+            fetchHistory(selectedAgent.id);
         }
-    }, [agents, selectedAgent]);
+    }, [agents, selectedAgent?.id]);
+
+    async function fetchHistory(agentId: string) {
+        try {
+            const res = await fetch('http://localhost:3001/api/history?range=1h');
+            const { snapshots } = await res.json();
+            const points = (snapshots as Array<{ timestamp: number; agents: Array<{ id: string; cpu: number; memory: number }> }>)
+                .map(snap => {
+                    const agent = snap.agents.find(a => a.id === agentId);
+                    if (!agent) return null;
+                    return {
+                        time: new Date(snap.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+                        cpu: agent.cpu,
+                        memory: agent.memory,
+                    };
+                })
+                .filter((p): p is { time: string; cpu: number; memory: number } => p !== null);
+            setHistoryData(points);
+        } catch {
+            setHistoryData([]);
+        }
+    }
 
     const filteredAgents = agents.filter((a) => {
         const matchesSearch = a.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -578,6 +605,36 @@ export function SwarmPage() {
                     {/* Actions */}
                     {selectedAgent.pid && (
                         <div className="p-6 border-t border-white/5">
+                            {/* History chart */}
+                            <div className="mt-4 pt-4 border-t border-white/5">
+                                <button
+                                    onClick={() => setHistoryOpen(o => !o)}
+                                    className="flex items-center gap-2 text-sm text-white/50 hover:text-white w-full"
+                                >
+                                    {historyOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                                    历史趋势（近 1 小时）
+                                </button>
+                                {historyOpen && (
+                                    <div className="mt-3">
+                                        {historyData.length > 0 ? (
+                                            <ResponsiveContainer width="100%" height={120}>
+                                                <LineChart data={historyData}>
+                                                    <XAxis dataKey="time" tick={{ fontSize: 10, fill: '#ffffff40' }} interval="preserveStartEnd" />
+                                                    <YAxis tick={{ fontSize: 10, fill: '#ffffff40' }} domain={[0, 100]} />
+                                                    <Tooltip
+                                                        contentStyle={{ background: '#1a1a1a', border: '1px solid #ffffff20', borderRadius: 8 }}
+                                                        labelStyle={{ color: '#ffffff80' }}
+                                                    />
+                                                    <Line type="monotone" dataKey="cpu" stroke="#f87171" dot={false} name="CPU %" strokeWidth={1.5} />
+                                                    <Line type="monotone" dataKey="memory" stroke="#60a5fa" dot={false} name="内存 MB" strokeWidth={1.5} />
+                                                </LineChart>
+                                            </ResponsiveContainer>
+                                        ) : (
+                                            <p className="text-xs text-white/30 text-center py-4">暂无历史数据（等待首次快照）</p>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
                             <Button
                                 className="w-full bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 gap-2 py-3 text-base"
                                 variant="outline"
