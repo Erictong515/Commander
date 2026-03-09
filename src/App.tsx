@@ -7,6 +7,7 @@ import { DashboardLayout } from './layouts/DashboardLayout';
 import { SwarmPage } from './pages/dashboard/SwarmPage';
 import { SystemsPage } from './pages/dashboard/SystemsPage';
 import { SettingsPage } from './pages/dashboard/SettingsPage';
+import { TopologyPage } from './pages/dashboard/TopologyPage';
 
 function App() {
   return (
@@ -30,6 +31,7 @@ function App() {
             <Route path="systems" element={<SystemsPage />} />
             <Route path="agents" element={<SwarmPage />} />
             <Route path="settings" element={<SettingsPage />} />
+            <Route path="topology" element={<TopologyPage />} />
           </Route>
         </Routes>
       </AuthProvider>

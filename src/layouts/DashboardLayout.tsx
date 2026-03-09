@@ -10,6 +10,7 @@ import {
     ChevronRight,
     Hexagon,
     LogOut,
+    Network,
 } from 'lucide-react';
 
 const navItems = [
@@ -17,6 +18,7 @@ const navItems = [
     { to: '/dashboard/systems', icon: Server, label: '系统管理', end: false },
     { to: '/dashboard/agents', icon: Bug, label: 'Agent 列表', end: false },
     { to: '/dashboard/settings', icon: Settings, label: '设置', end: false },
+    { to: '/dashboard/topology', icon: Network, label: '拓扑图', end: false },
 ];
 
 export function DashboardLayout() {
