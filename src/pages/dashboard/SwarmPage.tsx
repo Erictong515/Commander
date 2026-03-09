@@ -16,9 +16,11 @@ import {
     Filter,
     LayoutList,
     LayoutGrid,
+    Zap,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { GroupedAgentView } from './GroupedAgentView';
+import { TaskDispatchDrawer } from '@/components/custom/TaskDispatchDrawer';
 
 interface ClaudeTask {
     taskId: string;
@@ -52,6 +54,7 @@ export function SwarmPage() {
     const [typeFilter, setTypeFilter] = useState<string>('all');
     const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
     const [viewMode, setViewMode] = useState<'grouped' | 'table'>('grouped'); // 新增：视图模式
+    const [showDispatch, setShowDispatch] = useState(false);
 
     useEffect(() => {
         let ws: WebSocket;
@@ -83,6 +86,16 @@ export function SwarmPage() {
             clearTimeout(retryTimeout);
         };
     }, []);
+
+    // Sync selectedAgent with latest data from WebSocket
+    useEffect(() => {
+        if (selectedAgent) {
+            const updatedAgent = agents.find(a => a.id === selectedAgent.id);
+            if (updatedAgent && JSON.stringify(updatedAgent) !== JSON.stringify(selectedAgent)) {
+                setSelectedAgent(updatedAgent);
+            }
+        }
+    }, [agents, selectedAgent]);
 
     const filteredAgents = agents.filter((a) => {
         const matchesSearch = a.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -237,6 +250,14 @@ export function SwarmPage() {
                                 onChange={(e) => setSearchTerm(e.target.value)}
                             />
                         </div>
+                        {/* Dispatch Button */}
+                        <Button
+                            className="bg-red-500 hover:bg-red-600 text-white gap-2 shrink-0"
+                            onClick={() => setShowDispatch(true)}
+                        >
+                            <Zap className="w-4 h-4" />
+                            派发任务
+                        </Button>
                     </div>
                 </div>
                 {filteredAgents.length === 0 ? (
@@ -348,65 +369,96 @@ export function SwarmPage() {
                 )}
             </div>
 
-            {/* Agent Detail Panel (Slide-over) */}
+            {/* Agent Detail Panel (Slide-over) - 扩大宽度并增大字体 */}
             {selectedAgent && (
-                <div className="fixed inset-y-0 right-0 w-[400px] bg-[#0d0d0d] border-l border-white/5 z-50 shadow-2xl flex flex-col">
+                <div className="fixed inset-y-0 right-0 w-[600px] bg-[#0d0d0d] border-l border-white/5 z-50 shadow-2xl flex flex-col">
                     {/* Header */}
-                    <div className="flex items-center justify-between p-5 border-b border-white/5">
-                        <h3 className="text-lg font-semibold text-white">Agent 详情</h3>
+                    <div className="flex items-center justify-between p-6 border-b border-white/5">
+                        <h3 className="text-xl font-semibold text-white">Agent 详情</h3>
                         <button
                             onClick={() => setSelectedAgent(null)}
                             className="text-white/40 hover:text-white transition-colors"
                         >
-                            <X className="w-5 h-5" />
+                            <X className="w-6 h-6" />
                         </button>
                     </div>
 
                     {/* Content */}
-                    <div className="flex-1 overflow-y-auto p-5 space-y-6">
+                    <div className="flex-1 overflow-y-auto p-6 space-y-6">
                         {/* Name & Status */}
-                        <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-4">
                             <span
-                                className={`w-3 h-3 rounded-full ${selectedAgent.status === 'processing'
+                                className={`w-4 h-4 rounded-full ${selectedAgent.status === 'processing'
                                     ? 'bg-red-500 animate-pulse'
                                     : selectedAgent.status === 'active'
                                         ? 'bg-green-500'
                                         : 'bg-gray-500'
                                     }`}
                             />
-                            <span className="text-xl font-bold text-white">{selectedAgent.name}</span>
+                            <span className="text-2xl font-bold text-white">{selectedAgent.name}</span>
+                            <Badge
+                                variant="outline"
+                                className={
+                                    selectedAgent.type === 'Local-LLM'
+                                        ? 'text-purple-400 border-purple-400/30 text-sm px-3 py-1'
+                                        : 'text-blue-400 border-blue-400/30 text-sm px-3 py-1'
+                                }
+                            >
+                                {selectedAgent.type}
+                            </Badge>
                         </div>
 
                         {/* Info Grid */}
-                        <div className="grid grid-cols-2 gap-3">
-                            <InfoCell label="类型" value={selectedAgent.type} />
-                            <InfoCell label="状态" value={selectedAgent.status} />
+                        <div className="grid grid-cols-2 gap-4">
                             <InfoCell label="环境" value={selectedAgent.environment} />
                             <InfoCell label="PID" value={String(selectedAgent.pid ?? '—')} />
                             <InfoCell label="CPU" value={`${selectedAgent.cpu}%`} />
                             <InfoCell label="内存" value={`${selectedAgent.memory} MB`} />
                         </div>
 
-                        {/* Claude CLI Task Details */}
-                        {selectedAgent.currentTask && (
-                            <div className="space-y-3">
-                                <div className="text-xs font-semibold text-white/60 uppercase tracking-wide">
+                        {/* Claude CLI / Ollama Task Details */}
+                        {(selectedAgent.currentTask || selectedAgent.type === 'Local-LLM') && (
+                            <div className="space-y-4">
+                                <div className="text-sm font-semibold text-white/60 uppercase tracking-wide">
                                     任务信息
                                 </div>
 
                                 {/* Current Task */}
-                                <div className="bg-white/[0.02] rounded-lg p-3 border border-white/5">
-                                    <div className="text-[11px] text-white/30 mb-1.5">当前任务</div>
-                                    <div className="text-sm text-white leading-relaxed">
-                                        {selectedAgent.currentTask}
+                                {selectedAgent.currentTask && (
+                                    <div className="bg-white/[0.02] rounded-lg p-4 border border-white/5">
+                                        <div className="text-xs text-white/30 mb-2">当前任务</div>
+                                        <div className="text-base text-white leading-relaxed">
+                                            {selectedAgent.currentTask}
+                                        </div>
                                     </div>
-                                </div>
+                                )}
+
+                                {/* Ollama Model Info */}
+                                {selectedAgent.type === 'Local-LLM' && (
+                                    <div className="bg-purple-500/5 rounded-lg p-4 border border-purple-500/20">
+                                        <div className="text-xs text-purple-400/70 mb-2">模型信息</div>
+                                        <div className="text-base text-white font-mono">
+                                            {selectedAgent.name}
+                                        </div>
+                                        <div className="text-sm text-white/50 mt-2">
+                                            {selectedAgent.environment === 'Ollama Server'
+                                                ? '通过 Ollama API 连接'
+                                                : selectedAgent.environment}
+                                        </div>
+                                        <div className="mt-3 pt-3 border-t border-purple-500/20">
+                                            <div className="text-xs text-purple-400/70 mb-1">可用操作</div>
+                                            <div className="text-sm text-white/60">
+                                                推理 (inference) • 分析 (analysis) • 生成 (generation)
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
 
                                 {/* Project Path */}
                                 {selectedAgent.project && (
-                                    <div className="bg-white/[0.02] rounded-lg p-3 border border-white/5">
-                                        <div className="text-[11px] text-white/30 mb-1.5">工作目录</div>
-                                        <div className="text-xs text-white/70 font-mono break-all">
+                                    <div className="bg-white/[0.02] rounded-lg p-4 border border-white/5">
+                                        <div className="text-xs text-white/30 mb-2">工作目录</div>
+                                        <div className="text-sm text-white/70 font-mono break-all">
                                             {selectedAgent.project}
                                         </div>
                                     </div>
@@ -414,9 +466,9 @@ export function SwarmPage() {
 
                                 {/* Session ID */}
                                 {selectedAgent.sessionId && (
-                                    <div className="bg-white/[0.02] rounded-lg p-3 border border-white/5">
-                                        <div className="text-[11px] text-white/30 mb-1.5">会话 ID</div>
-                                        <div className="text-xs text-white/40 font-mono break-all">
+                                    <div className="bg-white/[0.02] rounded-lg p-4 border border-white/5">
+                                        <div className="text-xs text-white/30 mb-2">会话 ID</div>
+                                        <div className="text-sm text-white/40 font-mono break-all">
                                             {selectedAgent.sessionId}
                                         </div>
                                     </div>
@@ -426,13 +478,13 @@ export function SwarmPage() {
 
                         {/* Task List */}
                         {selectedAgent.tasks && selectedAgent.tasks.length > 0 && (
-                            <div className="space-y-3">
+                            <div className="space-y-4">
                                 {/* Task Statistics */}
                                 <div className="flex items-center justify-between">
-                                    <div className="text-xs font-semibold text-white/60 uppercase tracking-wide">
+                                    <div className="text-sm font-semibold text-white/60 uppercase tracking-wide">
                                         任务列表 ({selectedAgent.tasks.length})
                                     </div>
-                                    <div className="flex gap-2">
+                                    <div className="flex gap-3">
                                         {(() => {
                                             const pending = selectedAgent.tasks.filter(t => t.status === 'pending').length;
                                             const inProgress = selectedAgent.tasks.filter(t => t.status === 'in_progress').length;
@@ -440,17 +492,17 @@ export function SwarmPage() {
                                             return (
                                                 <>
                                                     {completed > 0 && (
-                                                        <span className="text-[10px] text-green-400">
+                                                        <span className="text-sm text-green-400">
                                                             ✓ {completed}
                                                         </span>
                                                     )}
                                                     {inProgress > 0 && (
-                                                        <span className="text-[10px] text-blue-400">
+                                                        <span className="text-sm text-blue-400">
                                                             ⟳ {inProgress}
                                                         </span>
                                                     )}
                                                     {pending > 0 && (
-                                                        <span className="text-[10px] text-white/40">
+                                                        <span className="text-sm text-white/40">
                                                             ○ {pending}
                                                         </span>
                                                     )}
@@ -460,7 +512,7 @@ export function SwarmPage() {
                                     </div>
                                 </div>
 
-                                <div className="space-y-2 max-h-64 overflow-y-auto scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+                                <div className="space-y-3 max-h-80 overflow-y-auto scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
                                     {selectedAgent.tasks.map((task) => {
                                         const isExpanded = expandedTaskId === task.taskId;
                                         return (
@@ -469,14 +521,14 @@ export function SwarmPage() {
                                                 className="bg-white/[0.02] rounded-lg border border-white/5 hover:border-white/10 transition-all cursor-pointer"
                                                 onClick={() => setExpandedTaskId(isExpanded ? null : task.taskId)}
                                             >
-                                                <div className="p-3">
-                                                    <div className="flex items-start justify-between gap-2 mb-1.5">
-                                                        <div className="text-sm text-white font-medium flex-1">
+                                                <div className="p-4">
+                                                    <div className="flex items-start justify-between gap-3 mb-2">
+                                                        <div className="text-base text-white font-medium flex-1">
                                                             {task.subject}
                                                         </div>
                                                         <Badge
                                                             variant="outline"
-                                                            className={`text-[10px] shrink-0 ${
+                                                            className={`text-xs shrink-0 ${
                                                                 task.status === 'completed'
                                                                     ? 'bg-green-500/10 text-green-400 border-green-500/20'
                                                                     : task.status === 'in_progress'
@@ -493,21 +545,21 @@ export function SwarmPage() {
                                                     </div>
 
                                                     {task.description && (
-                                                        <div className={`text-xs text-white/50 ${isExpanded ? '' : 'line-clamp-2'}`}>
+                                                        <div className={`text-sm text-white/50 ${isExpanded ? '' : 'line-clamp-2'}`}>
                                                             {task.description}
                                                         </div>
                                                     )}
 
                                                     {task.activeForm && task.status === 'in_progress' && (
-                                                        <div className="text-xs text-blue-400/70 mt-1.5 italic flex items-center gap-1">
-                                                            <span className="inline-block w-1 h-1 rounded-full bg-blue-400 animate-pulse"></span>
+                                                        <div className="text-sm text-blue-400/70 mt-2 italic flex items-center gap-1.5">
+                                                            <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse"></span>
                                                             {task.activeForm}
                                                         </div>
                                                     )}
 
                                                     {/* Expand indicator */}
                                                     {task.description && (
-                                                        <div className="text-[10px] text-white/30 mt-2 flex items-center gap-1">
+                                                        <div className="text-xs text-white/30 mt-3 flex items-center gap-1">
                                                             <span>{isExpanded ? '收起' : '展开详情'}</span>
                                                             <span className={`transition-transform ${isExpanded ? 'rotate-180' : ''}`}>
                                                                 ▼
@@ -521,51 +573,24 @@ export function SwarmPage() {
                                 </div>
                             </div>
                         )}
-
-                        {/* CPU Bar */}
-                        <div>
-                            <div className="flex justify-between text-xs text-white/40 mb-1">
-                                <span>CPU 使用率</span>
-                                <span>{selectedAgent.cpu}%</span>
-                            </div>
-                            <div className="h-2 bg-white/5 rounded-full overflow-hidden">
-                                <div
-                                    className="h-full bg-gradient-to-r from-red-500 to-red-600 rounded-full transition-all duration-500"
-                                    style={{ width: `${Math.min(selectedAgent.cpu, 100)}%` }}
-                                />
-                            </div>
-                        </div>
-
-                        {/* Memory Bar */}
-                        <div>
-                            <div className="flex justify-between text-xs text-white/40 mb-1">
-                                <span>内存占用</span>
-                                <span>{selectedAgent.memory} MB</span>
-                            </div>
-                            <div className="h-2 bg-white/5 rounded-full overflow-hidden">
-                                <div
-                                    className="h-full bg-gradient-to-r from-blue-500 to-purple-500 rounded-full transition-all duration-500"
-                                    style={{ width: `${Math.min(selectedAgent.memory / 20, 100)}%` }}
-                                />
-                            </div>
-                        </div>
                     </div>
 
                     {/* Actions */}
                     {selectedAgent.pid && (
-                        <div className="p-5 border-t border-white/5">
+                        <div className="p-6 border-t border-white/5">
                             <Button
-                                className="w-full bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 gap-2"
+                                className="w-full bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 gap-2 py-3 text-base"
                                 variant="outline"
                                 onClick={() => handleKillAgent(selectedAgent.pid!)}
                             >
-                                <StopCircle className="w-4 h-4" />
+                                <StopCircle className="w-5 h-5" />
                                 停止此 Agent
                             </Button>
                         </div>
                     )}
                 </div>
             )}
+            <TaskDispatchDrawer open={showDispatch} onClose={() => setShowDispatch(false)} />
         </div>
     );
 }
@@ -604,9 +629,9 @@ function StatCard({
 
 function InfoCell({ label, value }: { label: string; value: string }) {
     return (
-        <div className="bg-white/[0.02] rounded-lg p-3 border border-white/5">
-            <div className="text-[11px] text-white/30 mb-1">{label}</div>
-            <div className="text-sm text-white font-medium font-mono">{value}</div>
+        <div className="bg-white/[0.02] rounded-lg p-4 border border-white/5">
+            <div className="text-xs text-white/30 mb-1.5">{label}</div>
+            <div className="text-base text-white font-medium font-mono">{value}</div>
         </div>
     );
 }
