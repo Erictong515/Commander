@@ -102,8 +102,8 @@ function buildLayout(agents: LocalAgent[], handoffEdges: Edge[]) {
 }
 
 export function TopologyPage() {
-    const [nodes, setNodes, onNodesChange] = useNodesState([]);
-    const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+    const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+    const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
     const [agents, setAgents] = useState<LocalAgent[]>([]);
     const [isConnected, setIsConnected] = useState(false);
     const [handoffEdges, setHandoffEdges] = useState<Edge[]>([]);
