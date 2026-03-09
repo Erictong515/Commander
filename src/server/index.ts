@@ -21,6 +21,7 @@ import {
     ollamaAdapter,
     geminiAdapter,
 } from './adapters/index.js';
+import { loadHistory, saveSnapshot, getHistory, getStats as getHistoryStats } from './history.js';
 
 const app = express();
 app.use(cors());
@@ -31,13 +32,30 @@ const wss = new WebSocketServer({ server });
 
 const PORT = 3001;
 
+// Load history on startup
+loadHistory();
+
+// Snapshot every 30 seconds
+setInterval(async () => {
+    const agents = await getAllLocalAgents();
+    const sysInfo = await si.currentLoad();
+    const mem = await si.mem();
+    const systemCpu = sysInfo.currentLoad;
+    const systemMemory = mem.used / mem.total * 100;
+    saveSnapshot(
+        agents.map(a => ({ id: a.id, name: a.name, cpu: a.cpu, memory: a.memory, status: a.status })),
+        systemCpu,
+        systemMemory
+    );
+}, 30_000);
+
 // Define the target CLI processes to monitor
 // Each entry has a match pattern and exclusion patterns to avoid false positives
 const AGENT_RULES = [
     { id: 'claude', label: 'Claude CLI', type: 'CLI' as const, match: (name: string, cmd: string) => name === 'claude' || cmd === 'claude' || cmd.includes('/claude ') || cmd.startsWith('claude ') },
     { id: 'codex', label: 'Codex CLI', type: 'CLI' as const, match: (name: string, cmd: string) => name === 'codex' || cmd === 'codex' || cmd.includes('/codex ') || cmd.startsWith('codex ') },
     { id: 'gcloud', label: 'Google CLI', type: 'CLI' as const, match: (name: string, cmd: string) => name === 'gcloud' || cmd === 'gcloud' || cmd.includes('/gcloud ') || cmd.startsWith('gcloud ') },
-    { id: 'gemini', label: 'Gemini CLI', type: 'CLI' as const, match: (name: string, cmd: string) => name === 'gemini' || cmd === 'gemini' || cmd.includes('/gemini ') || cmd.startsWith('gemini ') },
+    { id: 'gemini', label: 'Gemini CLI', type: 'CLI' as const, match: (name: string, cmd: string) => name === 'gemini' || cmd === 'gemini' || cmd.includes('/gemini ') || cmd.includes('/bin/gemini') || cmd.startsWith('gemini ') },
     // Ollama Server (API service) - ollama serve
     { id: 'ollama-server', label: 'Ollama Server', type: 'Local-LLM' as const, match: (_name: string, cmd: string) => cmd.includes('ollama serve') || cmd.includes('ollama-serve') },
     // Ollama GUI App - exclude from agent list (it's just the menu bar app)
@@ -91,13 +109,15 @@ async function getProcessAgents(): Promise<AgentStatus[]> {
         for (const proc of processes.list) {
             const procName = proc.name.toLowerCase();
             const command = proc.command.toLowerCase();
+            const params = (proc.params || '').toLowerCase();
+            const fullCommand = `${command} ${params}`;
 
             // Skip explicitly excluded processes
-            if (EXCLUDED_PATTERNS.some(p => procName.includes(p) || command.includes(p))) {
+            if (EXCLUDED_PATTERNS.some(p => procName.includes(p) || fullCommand.includes(p))) {
                 continue;
             }
 
-            const rule = AGENT_RULES.find(r => r.match(procName, command));
+            const rule = AGENT_RULES.find(r => r.match(procName, fullCommand));
 
             if (rule) {
                 const agent: AgentStatus = {
@@ -365,6 +385,47 @@ app.get('/api/ollama/tasks/active', (_, res) => {
     try {
         const tasks = ollamaTracker.getAllActiveTasks();
         res.json({ tasks, count: tasks.length });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Gemini Task History API: get task history
+app.get('/api/gemini/tasks/history', async (req, res) => {
+    try {
+        const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 20;
+        const history = await geminiAdapter.getTaskHistory(limit);
+        res.json({ history, count: history.length });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Gemini Task Report API: get full task report by ID
+app.get('/api/gemini/tasks/:taskId/report', async (req, res) => {
+    try {
+        const { taskId } = req.params;
+        const task = await geminiAdapter.getTaskReport(taskId);
+
+        if (!task) {
+            res.status(404).json({ error: 'Task not found' });
+            return;
+        }
+
+        res.json({
+            taskId: task.taskId,
+            subject: task.subject,
+            agentId: task.agentId,
+            startTime: task.startTime,
+            endTime: task.endTime,
+            duration: task.duration,
+            success: task.success,
+            report: task.output,
+            metadata: {
+                reportLength: task.output?.length || 0,
+                generatedAt: new Date(task.endTime).toISOString(),
+            }
+        });
     } catch (err: any) {
         res.status(500).json({ error: err.message });
     }
@@ -1085,6 +1146,23 @@ app.post('/api/evals/stop', (_, res) => {
     } catch (err: any) {
         res.status(500).json({ error: err.message });
     }
+});
+
+// Get agent history
+app.get('/api/history', (req, res) => {
+    const rangeMap: Record<string, number> = {
+        '1h': 3600_000,
+        '6h': 21600_000,
+        '24h': 86400_000,
+    };
+    const range = (req.query.range as string) || '1h';
+    const rangeMs = rangeMap[range] ?? rangeMap['1h'];
+    res.json({ snapshots: getHistory(rangeMs), range, timestamp: Date.now() });
+});
+
+// Get history stats (per-agent averages)
+app.get('/api/history/stats', (_req, res) => {
+    res.json({ stats: getHistoryStats(), timestamp: Date.now() });
 });
 
 // ============================================================================
