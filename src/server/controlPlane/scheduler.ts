@@ -65,6 +65,15 @@ export class Scheduler {
      * Find the best agent for a task using multi-factor scoring
      */
     findBestAgent(task: SwarmTask, agents: AgentHandle[]): AgentScore | null {
+        const scores = this.rankAgents(task, agents);
+        return scores.length > 0 ? scores[0] : null;
+    }
+
+    /**
+     * Rank all eligible agents for a task (sorted best-first).
+     * Used by the orchestrator for fallback dispatch.
+     */
+    rankAgents(task: SwarmTask, agents: AgentHandle[]): AgentScore[] {
         const scores: AgentScore[] = [];
 
         for (const agent of agents) {
@@ -74,11 +83,8 @@ export class Scheduler {
             }
         }
 
-        if (scores.length === 0) return null;
-
-        // Sort by score (higher is better)
         scores.sort((a, b) => b.score - a.score);
-        return scores[0];
+        return scores;
     }
 
     /**
@@ -89,6 +95,11 @@ export class Scheduler {
         let score = 100; // Base score
 
         // === Eligibility Checks (disqualifying factors) ===
+
+        // Exclude agents that cannot accept programmatic dispatch (e.g. Claude CLI)
+        if (agent.dispatchable === false) {
+            return { agentId: agent.id, score: 0, reasons: ['Not dispatchable (monitoring only)'] };
+        }
 
         // Check agent status
         if (agent.status === 'offline' || agent.status === 'error' || agent.status === 'paused') {
