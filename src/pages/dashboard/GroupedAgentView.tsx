@@ -30,6 +30,8 @@ interface GroupedAgentViewProps {
     agents: LocalAgent[];
     onAgentClick: (agent: LocalAgent) => void;
     selectedAgent: LocalAgent | null;
+    selectedPids: Set<number>;
+    onToggleSelect: (pid: number) => void;
 }
 
 type AgentGroup = {
@@ -41,7 +43,7 @@ type AgentGroup = {
     defaultExpanded: boolean;
 };
 
-export function GroupedAgentView({ agents, onAgentClick, selectedAgent }: GroupedAgentViewProps) {
+export function GroupedAgentView({ agents, onAgentClick, selectedAgent, selectedPids, onToggleSelect }: GroupedAgentViewProps) {
     // Group agents by status with priority
     const errorAgents = agents.filter(a => a.status === 'error');
     const processingAgents = agents.filter(a => a.status === 'processing');
@@ -161,6 +163,15 @@ export function GroupedAgentView({ agents, onAgentClick, selectedAgent }: Groupe
                                         onClick={() => onAgentClick(agent)}
                                     >
                                         <div className="flex items-start justify-between gap-4">
+                                            {agent.pid && (
+                                                <input
+                                                    type="checkbox"
+                                                    className="w-4 h-4 accent-red-500 shrink-0 cursor-pointer mt-1"
+                                                    checked={selectedPids.has(agent.pid)}
+                                                    onChange={e => { e.stopPropagation(); onToggleSelect(agent.pid!); }}
+                                                    onClick={e => e.stopPropagation()}
+                                                />
+                                            )}
                                             {/* Agent Info */}
                                             <div className="flex-1 min-w-0">
                                                 <div className="flex items-center gap-3 mb-2">

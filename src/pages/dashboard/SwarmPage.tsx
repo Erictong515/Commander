@@ -60,6 +60,8 @@ export function SwarmPage() {
     const [showDispatch, setShowDispatch] = useState(false);
     const [historyData, setHistoryData] = useState<Array<{ time: string; cpu: number; memory: number }>>([]);
     const [historyOpen, setHistoryOpen] = useState(false);
+    const [selectedPids, setSelectedPids] = useState<Set<number>>(new Set());
+    const [bulkLoading, setBulkLoading] = useState(false);
 
     useEffect(() => {
         let ws: WebSocket;
@@ -143,6 +145,36 @@ export function SwarmPage() {
         } catch (e) {
             console.error('Failed to kill agent', e);
         }
+    }
+
+    function toggleSelect(pid: number) {
+        setSelectedPids(prev => {
+            const next = new Set(prev);
+            if (next.has(pid)) next.delete(pid);
+            else next.add(pid);
+            return next;
+        });
+    }
+
+    function selectAll() {
+        const allPids = filteredAgents.filter(a => a.pid).map(a => a.pid as number);
+        setSelectedPids(new Set(allPids));
+    }
+
+    async function bulkKill() {
+        if (selectedPids.size === 0) return;
+        if (!confirm(`确定停止 ${selectedPids.size} 个 Agent 吗？此操作不可撤销`)) return;
+        setBulkLoading(true);
+        const results = await Promise.allSettled(
+            [...selectedPids].map(pid =>
+                fetch(`http://localhost:3001/api/agents/${pid}/kill`, { method: 'POST' })
+            )
+        );
+        const succeeded = results.filter(r => r.status === 'fulfilled').length;
+        const failed = results.filter(r => r.status === 'rejected').length;
+        alert(`已停止 ${succeeded} 个，失败 ${failed} 个`);
+        setSelectedPids(new Set());
+        setBulkLoading(false);
     }
 
     return (
@@ -300,11 +332,34 @@ export function SwarmPage() {
                     </div>
                 ) : viewMode === 'grouped' ? (
                     // 分组视图
-                    <GroupedAgentView
-                        agents={filteredAgents}
-                        onAgentClick={setSelectedAgent}
-                        selectedAgent={selectedAgent}
-                    />
+                    <>
+                        {/* Bulk action toolbar */}
+                        {selectedPids.size > 0 && (
+                            <div className="flex items-center gap-3 px-4 py-2 bg-white/[0.03] border border-white/10 rounded-lg mb-3">
+                                <span className="text-sm text-white/60">已选 {selectedPids.size} 个 Agent</span>
+                                <button onClick={selectAll} className="text-xs text-blue-400 hover:text-blue-300">全选</button>
+                                <button onClick={() => setSelectedPids(new Set())} className="text-xs text-white/40 hover:text-white">取消</button>
+                                <div className="flex-1" />
+                                <Button
+                                    size="sm"
+                                    variant="destructive"
+                                    onClick={bulkKill}
+                                    disabled={bulkLoading}
+                                    className="bg-red-600 hover:bg-red-700 text-white gap-1"
+                                >
+                                    <StopCircle className="w-3.5 h-3.5" />
+                                    {bulkLoading ? '停止中...' : '批量停止'}
+                                </Button>
+                            </div>
+                        )}
+                        <GroupedAgentView
+                            agents={filteredAgents}
+                            onAgentClick={setSelectedAgent}
+                            selectedAgent={selectedAgent}
+                            selectedPids={selectedPids}
+                            onToggleSelect={toggleSelect}
+                        />
+                    </>
                 ) : (
                     // 表格视图（原有的）
                     <div className="rounded-xl border border-white/5 overflow-hidden">
